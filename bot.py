@@ -4,6 +4,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
+from statistics import median
 from urllib.parse import urljoin
 
 import requests
@@ -36,6 +37,7 @@ POSITIVE_KEYWORDS = [
     "tüv bis",
     "hu bis",
     "scheckheft",
+    "scheckheftgepflegt",
     "gepflegt",
     "1. hand",
     "2. hand",
@@ -81,6 +83,8 @@ def require_env() -> None:
 
 
 def load_state() -> dict[str, list[str]]:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
     if not STATE_FILE.exists():
         return {"seen_ids": []}
 
@@ -98,6 +102,8 @@ def load_state() -> dict[str, list[str]]:
 
 
 def save_state(state: dict[str, list[str]]) -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
     with STATE_FILE.open("w", encoding="utf-8") as file:
         json.dump(state, file, ensure_ascii=False, indent=2)
 
@@ -287,6 +293,7 @@ def fetch_listing_details(url: str) -> dict[str, str | int | None]:
     km = parse_km(page_text)
     hu = parse_hu(page_text)
     provider_type = extract_provider_type(page_text)
+    matched_model = model_matches(f"{title} {page_text}")
 
     return {
         "title": title or "Auto-Angebot",
@@ -297,6 +304,7 @@ def fetch_listing_details(url: str) -> dict[str, str | int | None]:
         "hu": hu,
         "provider_type": provider_type,
         "page_text": page_text,
+        "model": matched_model or "",
     }
 
 
@@ -343,27 +351,127 @@ def build_score(details: dict[str, str | int | None]) -> int:
     km = details.get("km")
     if isinstance(km, int):
         if km <= 120000:
-            score += 2
+            score += 3
         elif km <= 160000:
+            score += 2
+        elif km <= 200000:
             score += 1
 
     price = details.get("price")
     if isinstance(price, int):
-        if price <= 2000:
+        if price <= 1800:
+            score += 3
+        elif price <= 2300:
             score += 2
-        elif price <= 2500:
+        elif price <= 2800:
             score += 1
+
+    first_registration_year = details.get("first_registration_year")
+    if isinstance(first_registration_year, int):
+        if first_registration_year >= 2012:
+            score += 2
+        elif first_registration_year >= 2008:
+            score += 1
+
+    hu = str(details.get("hu", "")).lower()
+    if "tüv neu" in text.lower() or "hu neu" in text.lower():
+        score += 2
+    elif hu:
+        score += 1
 
     return score
 
 
-def build_message(url: str, details: dict[str, str | int | None], matched_model: str) -> str:
+def score_label(score: int) -> str:
+    if score >= 8:
+        return "sehr interessant"
+    if score >= 5:
+        return "interessant"
+    if score >= 3:
+        return "okay"
+    return "eher schwach"
+
+
+def price_band_label(price: int, reference_median: int) -> str:
+    if reference_median <= 0:
+        return "kein Vergleich"
+
+    ratio = price / reference_median
+
+    if ratio <= 0.75:
+        return "sehr guenstig"
+    if ratio <= 0.90:
+        return "eher guenstig"
+    if ratio <= 1.10:
+        return "normal"
+    return "eher teuer"
+
+
+def build_market_reference(all_details: list[dict[str, str | int | None]], target_details: dict[str, str | int | None]) -> tuple[str, int | None]:
+    target_model = str(target_details.get("model", "")).strip().lower()
+    target_year = target_details.get("first_registration_year")
+    target_km = target_details.get("km")
+
+    comparable_prices: list[int] = []
+
+    for details in all_details:
+        model = str(details.get("model", "")).strip().lower()
+        price = details.get("price")
+        year = details.get("first_registration_year")
+        km = details.get("km")
+
+        if model != target_model:
+            continue
+        if not isinstance(price, int):
+            continue
+
+        year_ok = True
+        km_ok = True
+
+        if isinstance(target_year, int) and isinstance(year, int):
+            year_ok = abs(target_year - year) <= 3
+
+        if isinstance(target_km, int) and isinstance(km, int):
+            km_ok = abs(target_km - km) <= 50000
+
+        if year_ok and km_ok:
+            comparable_prices.append(price)
+
+    if len(comparable_prices) < 3:
+        fallback_prices = []
+        for details in all_details:
+            model = str(details.get("model", "")).strip().lower()
+            price = details.get("price")
+            if model == target_model and isinstance(price, int):
+                fallback_prices.append(price)
+        comparable_prices = fallback_prices
+
+    if len(comparable_prices) < 2:
+        return "kein Vergleich", None
+
+    ref = int(median(comparable_prices))
+    price = target_details.get("price")
+    if not isinstance(price, int):
+        return "kein Vergleich", ref
+
+    return price_band_label(price, ref), ref
+
+
+def build_message(
+    url: str,
+    details: dict[str, str | int | None],
+    matched_model: str,
+    market_label: str,
+    market_reference: int | None,
+) -> str:
     title = str(details.get("title", "Auto-Angebot"))
     price = details.get("price")
     first_registration_year = details.get("first_registration_year")
     km = details.get("km")
     hu = str(details.get("hu", ""))
+
     score = build_score(details)
+    label = score_label(score)
 
     lines = [
         "Neue Auto-Chance",
@@ -381,7 +489,13 @@ def build_message(url: str, details: dict[str, str | int | None], matched_model:
     if hu:
         lines.append(hu)
 
-    lines.append(f"Score: {score}")
+    lines.append(f"Qualitaet: {label} (Score {score})")
+
+    if market_reference is not None:
+        lines.append(f"Preisvergleich: {market_label} (Vergleich ca. {market_reference} €)")
+    else:
+        lines.append(f"Preisvergleich: {market_label}")
+
     lines.append("")
     lines.append(url)
 
@@ -419,21 +533,33 @@ def main() -> None:
                 save_state(state)
                 print("Erster Start: aktuelle Anzeigen gespeichert, nichts gesendet.")
             else:
+                fetched_details: dict[str, dict[str, str | int | None]] = {}
+
+                for item in records:
+                    try:
+                        fetched_details[item["id"]] = fetch_listing_details(item["url"])
+                    except Exception as exc:
+                        print(f"Fehler beim Vorladen {item['url']}: {exc}")
+
+                all_details = list(fetched_details.values())
                 new_records = [item for item in records if item["id"] not in seen_ids]
 
                 for item in new_records:
                     url = item["url"]
                     try:
-                        details = fetch_listing_details(url)
-                        is_good, reason = is_interesting_listing(details)
+                        details = fetched_details.get(item["id"])
+                        if not details:
+                            details = fetch_listing_details(url)
 
+                        is_good, reason = is_interesting_listing(details)
                         seen_ids.add(item["id"])
 
                         if not is_good:
                             print(f"Übersprungen: {url} ({reason})")
                             continue
 
-                        message = build_message(url, details, reason)
+                        market_label, market_reference = build_market_reference(all_details, details)
+                        message = build_message(url, details, reason, market_label, market_reference)
 
                         image_url = str(details.get("image_url", ""))
                         if image_url:
