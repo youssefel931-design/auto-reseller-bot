@@ -22,6 +22,7 @@ SEARCH_URL = "https://www.kleinanzeigen.de/s-autos/dietzenbach/anbieter:privat/p
 
 MAX_PRICE = 3000
 MIN_YEAR = 2005
+MAX_KM = 200000
 
 TARGET_MODELS = [
     "vw polo",
@@ -337,6 +338,12 @@ def is_interesting_listing(details: dict[str, str | int | None]) -> tuple[bool, 
     if first_registration_year < MIN_YEAR:
         return False, "Zu alt"
 
+    km = details.get("km")
+    if not isinstance(km, int):
+        return False, "Keine KM erkannt"
+    if km > MAX_KM:
+        return False, "Zu viele KM"
+
     hu = str(details.get("hu", ""))
     if not hu:
         return False, "Kein TÜV/HU erkannt"
@@ -350,11 +357,11 @@ def build_score(details: dict[str, str | int | None]) -> int:
 
     km = details.get("km")
     if isinstance(km, int):
-        if km <= 120000:
+        if km <= 100000:
             score += 3
-        elif km <= 160000:
+        elif km <= 140000:
             score += 2
-        elif km <= 200000:
+        elif km <= 180000:
             score += 1
 
     price = details.get("price")
@@ -407,7 +414,10 @@ def price_band_label(price: int, reference_median: int) -> str:
     return "eher teuer"
 
 
-def build_market_reference(all_details: list[dict[str, str | int | None]], target_details: dict[str, str | int | None]) -> tuple[str, int | None]:
+def build_market_reference(
+    all_details: list[dict[str, str | int | None]],
+    target_details: dict[str, str | int | None],
+) -> tuple[str, int | None]:
     target_model = str(target_details.get("model", "")).strip().lower()
     target_year = target_details.get("first_registration_year")
     target_km = target_details.get("km")
@@ -513,6 +523,7 @@ def main() -> None:
         f"Radius: 150 km\n"
         f"Max Preis: {MAX_PRICE} €\n"
         f"EZ ab: {MIN_YEAR}\n"
+        f"Max KM: {MAX_KM:,}".replace(",", ".") + "\n"
         f"Modelle: {', '.join(TARGET_MODELS)}"
     )
 
