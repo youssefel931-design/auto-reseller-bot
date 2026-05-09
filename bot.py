@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from statistics import median
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,31 +18,23 @@ STATE_FILE = Path("/data/state.json")
 REQUEST_TIMEOUT = 20
 TELEGRAM_CAPTION_LIMIT = 1024
 
-SEARCH_SOURCES = [
-    {
-        "key": "kleinanzeigen",
-        "label": "Kleinanzeigen",
-        "url": "https://www.kleinanzeigen.de/s-autos/dietzenbach/anbieter:privat/preis::3000/c216l4556r150",
-    },
-    {
-        "key": "mobile",
-        "label": "mobile.de",
-        "url": "https://suchen.mobile.de/fahrzeuge/search.html?isSearchRequest=true&s=Car&vc=Car&asl=true&cn=DE&fr=2005&gn=Dietzenbach%2C+Hessen&ll=50.009289%2C8.77697&p=%3A3000&rd=150&st=FSBO&ref=dsp",
-    },
-]
+SEARCH_URL = "https://www.kleinanzeigen.de/s-autos/dietzenbach/anbieter:privat/preis::3000/c216l4556r150"
 
 MAX_PRICE = 3000
-MIN_YEAR = 2005
+DEFAULT_MIN_YEAR = 2005
 MAX_KM = 150000
 
-TARGET_MODELS = [
-    "vw polo",
-    "vw golf",
-    "opel corsa",
-    "skoda fabia",
-    "ford focus",
-    "toyota yaris",
-]
+MODEL_MIN_YEAR = {
+    "vw polo": 2005,
+    "vw golf": 2005,
+    "opel corsa": 2005,
+    "skoda fabia": 2005,
+    "ford focus": 2005,
+    "toyota yaris": 2005,
+    "smart fortwo": 2003,
+}
+
+TARGET_MODELS = list(MODEL_MIN_YEAR.keys())
 
 POSITIVE_KEYWORDS = [
     "tüv neu",
@@ -94,36 +86,28 @@ def require_env() -> None:
         raise RuntimeError("TELEGRAM_CHAT_ID fehlt")
 
 
-def load_state() -> dict[str, dict[str, list[str]]]:
+def load_state() -> dict[str, list[str]]:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     if not STATE_FILE.exists():
-        return {"seen_ids": {}}
+        return {"seen_ids": []}
 
     with STATE_FILE.open("r", encoding="utf-8") as file:
         data = json.load(file)
 
     if not isinstance(data, dict):
-        return {"seen_ids": {}}
+        return {"seen_ids": []}
 
-    seen_ids = data.get("seen_ids", {})
-    if isinstance(seen_ids, list):
-        # Rueckwaertskompatibel: alter Stand nur fuer Kleinanzeigen
-        return {"seen_ids": {"kleinanzeigen": [item for item in seen_ids if isinstance(item, str)]}}
+    seen_ids = data.get("seen_ids", [])
+    if not isinstance(seen_ids, list):
+        seen_ids = []
 
-    if not isinstance(seen_ids, dict):
-        return {"seen_ids": {}}
-
-    normalized: dict[str, list[str]] = {}
-    for source_key, values in seen_ids.items():
-        if isinstance(source_key, str) and isinstance(values, list):
-            normalized[source_key] = [item for item in values if isinstance(item, str)]
-
-    return {"seen_ids": normalized}
+    return {"seen_ids": [item for item in seen_ids if isinstance(item, str)]}
 
 
-def save_state(state: dict[str, dict[str, list[str]]]) -> None:
+def save_state(state: dict[str, list[str]]) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
     with STATE_FILE.open("w", encoding="utf-8") as file:
         json.dump(state, file, ensure_ascii=False, indent=2)
 
@@ -132,14 +116,11 @@ def clean_text(value: str) -> str:
     return " ".join(value.split()).strip()
 
 
-def get_seen_ids(state: dict[str, dict[str, list[str]]], source_key: str) -> set[str]:
-    return set(state.get("seen_ids", {}).get(source_key, []))
-
-
-def set_seen_ids(state: dict[str, dict[str, list[str]]], source_key: str, seen_ids: set[str]) -> None:
-    if "seen_ids" not in state or not isinstance(state["seen_ids"], dict):
-        state["seen_ids"] = {}
-    state["seen_ids"][source_key] = sorted(seen_ids)
+def extract_listing_id(url: str) -> str | None:
+    match = re.search(r"/(\d+)-216-", url)
+    if not match:
+        return None
+    return match.group(1)
 
 
 def send_telegram_message(message: str) -> None:
@@ -166,6 +147,30 @@ def send_telegram_photo(photo_url: str, caption: str) -> None:
         timeout=REQUEST_TIMEOUT,
     )
     response.raise_for_status()
+
+
+def fetch_search_results() -> list[dict[str, str]]:
+    response = requests.get(SEARCH_URL, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    records: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"].strip()
+        if "/s-anzeige/" not in href:
+            continue
+
+        full_url = urljoin("https://www.kleinanzeigen.de", href)
+        listing_id = extract_listing_id(full_url)
+        if not listing_id or listing_id in seen_ids:
+            continue
+
+        seen_ids.add(listing_id)
+        records.append({"id": listing_id, "url": full_url})
+
+    return records
 
 
 def first_meta_content(soup: BeautifulSoup, attrs_list: list[dict[str, str]]) -> str | None:
@@ -227,8 +232,8 @@ def parse_first_registration_year(text: str) -> int | None:
 
 def parse_km(text: str) -> int | None:
     patterns = [
-        r"Kilometerstand\s+([\d\.\s]+)\s*km",
-        r"\b([\d\.\s]{2,})\s*km\b",
+        r"Kilometerstand\s*[:\-]?\s*([\d\.\s]+)\s*km",
+        r"km-stand\s*[:\-]?\s*([\d\.\s]+)\s*km",
     ]
 
     for pattern in patterns:
@@ -250,7 +255,7 @@ def parse_hu(text: str) -> str:
 
 def extract_provider_type(text: str) -> str:
     lowered = text.lower()
-    if "privater nutzer" in lowered or "privatanbieter" in lowered or "privat" in lowered:
+    if "privater nutzer" in lowered or "privatanbieter" in lowered:
         return "Privat"
     if "gewerblicher anbieter" in lowered or "gewerblich" in lowered or "händler" in lowered:
         return "Gewerblich"
@@ -280,83 +285,6 @@ def count_positive_keywords(text: str) -> int:
         if keyword in lowered:
             count += 1
     return count
-
-
-def extract_kleinanzeigen_listing_id(url: str) -> str | None:
-    match = re.search(r"/(\d+)-216-", url)
-    if not match:
-        return None
-    return match.group(1)
-
-
-def extract_mobile_listing_id(url: str) -> str | None:
-    parsed = urlparse(url)
-    query = parse_qs(parsed.query)
-    listing_id = query.get("id", [])
-    if listing_id:
-        return listing_id[0]
-
-    match = re.search(r"id=(\d+)", url)
-    if match:
-        return match.group(1)
-
-    return None
-
-
-def fetch_kleinanzeigen_search_results(search_url: str) -> list[dict[str, str]]:
-    response = requests.get(search_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    records: list[dict[str, str]] = []
-    seen_ids: set[str] = set()
-
-    for link in soup.find_all("a", href=True):
-        href = link["href"].strip()
-        if "/s-anzeige/" not in href:
-            continue
-
-        full_url = urljoin("https://www.kleinanzeigen.de", href)
-        listing_id = extract_kleinanzeigen_listing_id(full_url)
-        if not listing_id or listing_id in seen_ids:
-            continue
-
-        seen_ids.add(listing_id)
-        records.append({"id": listing_id, "url": full_url})
-
-    return records
-
-
-def fetch_mobile_search_results(search_url: str) -> list[dict[str, str]]:
-    response = requests.get(search_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    records: list[dict[str, str]] = []
-    seen_ids: set[str] = set()
-
-    for link in soup.find_all("a", href=True):
-        href = link["href"].strip()
-        if "/fahrzeuge/details.html" not in href:
-            continue
-
-        full_url = urljoin("https://suchen.mobile.de", href)
-        listing_id = extract_mobile_listing_id(full_url)
-        if not listing_id or listing_id in seen_ids:
-            continue
-
-        seen_ids.add(listing_id)
-        records.append({"id": listing_id, "url": full_url})
-
-    return records
-
-
-def fetch_search_results(source: dict[str, str]) -> list[dict[str, str]]:
-    if source["key"] == "kleinanzeigen":
-        return fetch_kleinanzeigen_search_results(source["url"])
-    if source["key"] == "mobile":
-        return fetch_mobile_search_results(source["url"])
-    return []
 
 
 def fetch_listing_details(url: str) -> dict[str, str | int | None]:
@@ -420,9 +348,10 @@ def is_interesting_listing(details: dict[str, str | int | None]) -> tuple[bool, 
         return False, "Preis zu hoch"
 
     first_registration_year = details.get("first_registration_year")
+    min_year = MODEL_MIN_YEAR.get(matched_model, DEFAULT_MIN_YEAR)
     if not isinstance(first_registration_year, int):
         return False, "Keine Erstzulassung erkannt"
-    if first_registration_year < MIN_YEAR:
+    if first_registration_year < min_year:
         return False, "Zu alt"
 
     km = details.get("km")
@@ -444,11 +373,11 @@ def build_score(details: dict[str, str | int | None]) -> int:
 
     km = details.get("km")
     if isinstance(km, int):
-        if km <= 100000:
+        if km <= 90000:
             score += 3
-        elif km <= 140000:
+        elif km <= 120000:
             score += 2
-        elif km <= 180000:
+        elif km <= 150000:
             score += 1
 
     price = details.get("price")
@@ -529,7 +458,7 @@ def build_market_reference(
             year_ok = abs(target_year - year) <= 3
 
         if isinstance(target_km, int) and isinstance(km, int):
-            km_ok = abs(target_km - km) <= 50000
+            km_ok = abs(target_km - km) <= 40000
 
         if year_ok and km_ok:
             comparable_prices.append(price)
@@ -555,7 +484,6 @@ def build_market_reference(
 
 
 def build_message(
-    source_label: str,
     url: str,
     details: dict[str, str | int | None],
     matched_model: str,
@@ -572,7 +500,7 @@ def build_message(
     label = score_label(score)
 
     lines = [
-        f"Neue Auto-Chance auf {source_label}",
+        "Neue Auto-Chance",
         title,
         "",
         f"Modell: {matched_model}",
@@ -604,12 +532,14 @@ def main() -> None:
     require_env()
     state = load_state()
 
+    seen_ids = set(state.get("seen_ids", []))
+
     startup_message = (
         "Auto-Reseller-Bot gestartet.\n"
-        f"Quellen: {', '.join(source['label'] for source in SEARCH_SOURCES)}\n"
-        f"Radius: 150 km\n"
+        "Quelle: Kleinanzeigen\n"
+        "Radius: 150 km\n"
         f"Max Preis: {MAX_PRICE} €\n"
-        f"EZ ab: {MIN_YEAR}\n"
+        f"EZ Standard ab: {DEFAULT_MIN_YEAR}\n"
         f"Max KM: {MAX_KM:,}".replace(",", ".") + "\n"
         f"Modelle: {', '.join(TARGET_MODELS)}"
     )
@@ -622,40 +552,24 @@ def main() -> None:
         print(f"Neuer Durchlauf: {now}")
 
         try:
-            all_records_by_source: dict[str, list[dict[str, str]]] = {}
-            all_details_by_source: dict[str, list[dict[str, str | int | None]]] = {}
-            all_fetched_details: dict[str, dict[str, dict[str, str | int | None]]] = {}
+            records = fetch_search_results()
+            print(f"{len(records)} Anzeigen gefunden.")
 
-            for source in SEARCH_SOURCES:
-                records = fetch_search_results(source)
-                all_records_by_source[source["key"]] = records
-                print(f"{source['label']}: {len(records)} Anzeigen gefunden.")
-
+            if not seen_ids:
+                seen_ids.update(item["id"] for item in records)
+                state["seen_ids"] = sorted(seen_ids)
+                save_state(state)
+                print("Erster Start: aktuelle Anzeigen gespeichert, nichts gesendet.")
+            else:
                 fetched_details: dict[str, dict[str, str | int | None]] = {}
+
                 for item in records:
                     try:
                         fetched_details[item["id"]] = fetch_listing_details(item["url"])
                     except Exception as exc:
-                        print(f"Fehler beim Vorladen {source['label']} {item['url']}: {exc}")
+                        print(f"Fehler beim Vorladen {item['url']}: {exc}")
 
-                all_fetched_details[source["key"]] = fetched_details
-                all_details_by_source[source["key"]] = list(fetched_details.values())
-
-            for source in SEARCH_SOURCES:
-                source_key = source["key"]
-                source_label = source["label"]
-                seen_ids = get_seen_ids(state, source_key)
-                records = all_records_by_source[source_key]
-                fetched_details = all_fetched_details[source_key]
-                all_details = all_details_by_source[source_key]
-
-                if not seen_ids:
-                    seen_ids.update(item["id"] for item in records)
-                    set_seen_ids(state, source_key, seen_ids)
-                    save_state(state)
-                    print(f"{source_label}: Erster Start, aktuelle Anzeigen gespeichert, nichts gesendet.")
-                    continue
-
+                all_details = list(fetched_details.values())
                 new_records = [item for item in records if item["id"] not in seen_ids]
 
                 for item in new_records:
@@ -669,11 +583,11 @@ def main() -> None:
                         seen_ids.add(item["id"])
 
                         if not is_good:
-                            print(f"{source_label}: Übersprungen {url} ({reason})")
+                            print(f"Übersprungen: {url} ({reason})")
                             continue
 
                         market_label, market_reference = build_market_reference(all_details, details)
-                        message = build_message(source_label, url, details, reason, market_label, market_reference)
+                        message = build_message(url, details, reason, market_label, market_reference)
 
                         image_url = str(details.get("image_url", ""))
                         if image_url:
@@ -681,13 +595,13 @@ def main() -> None:
                         else:
                             send_telegram_message(message)
 
-                        print(f"{source_label}: Gesendet {url}")
+                        print(f"Gesendet: {url}")
 
                     except Exception as exc:
                         seen_ids.add(item["id"])
-                        print(f"{source_label}: Fehler bei Anzeige {url}: {exc}")
+                        print(f"Fehler bei Anzeige {url}: {exc}")
 
-                set_seen_ids(state, source_key, seen_ids)
+                state["seen_ids"] = sorted(seen_ids)
                 save_state(state)
 
         except Exception as exc:
