@@ -253,13 +253,12 @@ def contains_negative_keyword(text: str) -> str | None:
 
 def is_interesting_listing(details: dict[str, str]) -> tuple[bool, str]:
     text = f"{details['title']} {details['page_text']}"
-    lowered = text.lower()
 
-    negative = contains_negative_keyword(lowered)
+    negative = contains_negative_keyword(text)
     if negative:
         return False, f"Ausschlusswort: {negative}"
 
-    score = keyword_score(lowered)
+    score = keyword_score(text)
     if score == 0:
         return False, "Kein Treffer-Keyword"
 
@@ -357,3 +356,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
