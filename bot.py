@@ -119,6 +119,10 @@ def clean_text(value: str) -> str:
     return " ".join(value.split()).strip()
 
 
+def make_soup(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html, "lxml")
+
+
 def send_telegram_message(message: str) -> None:
     response = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
@@ -156,7 +160,7 @@ def fetch_search_results() -> list[dict[str, str]]:
     response = requests.get(SEARCH_URL, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = make_soup(response.text)
     records: list[dict[str, str]] = []
     seen_ids: set[str] = set()
 
@@ -212,7 +216,7 @@ def fetch_listing_details(url: str) -> dict[str, str]:
     response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = make_soup(response.text)
     page_text = clean_text(soup.get_text(" ", strip=True))
 
     title = (
@@ -289,7 +293,7 @@ def build_message(url: str, details: dict[str, str]) -> str:
 
 def main() -> None:
     require_env()
-    print("MINI_BOT_TEST_V1")
+    print("MINI_BOT_TEST_V2_LXML")
 
     state = load_state()
     seen_ids = set(state.get("seen_ids", []))
