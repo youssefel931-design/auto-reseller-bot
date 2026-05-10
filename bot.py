@@ -23,6 +23,9 @@ POSITIVE_KEYWORDS = [
     "iphone",
     "ipad",
     "macbook",
+    "imac",
+    "apple watch",
+    "airpods",
     "samsung",
     "galaxy",
     "playstation",
@@ -50,6 +53,8 @@ POSITIVE_KEYWORDS = [
     "makita",
     "akku",
     "fahrrad",
+    "e-bike",
+    "lego",
 ]
 
 NEGATIVE_KEYWORDS = [
@@ -59,11 +64,9 @@ NEGATIVE_KEYWORDS = [
     "funktioniert nicht",
     "ersatzteil",
     "ersatzteile",
-    "teile",
     "nur gehäuse",
     "leer karton",
     "anleitung",
-    "zubehör",
     "dummy",
     "attrappe",
     "gesperrt",
