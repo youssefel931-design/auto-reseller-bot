@@ -263,7 +263,7 @@ def is_interesting_listing(details: dict[str, str]) -> tuple[bool, str]:
     if score == 0:
         return False, "Kein Treffer-Keyword"
 
-    return True, f"{score}"
+    return True, str(score)
 
 
 def build_message(url: str, details: dict[str, str]) -> str:
@@ -356,6 +356,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
-
     main()
