@@ -289,6 +289,8 @@ def build_message(url: str, details: dict[str, str]) -> str:
 
 def main() -> None:
     require_env()
+    print("MINI_BOT_TEST_V1")
+
     state = load_state()
     seen_ids = set(state.get("seen_ids", []))
 
