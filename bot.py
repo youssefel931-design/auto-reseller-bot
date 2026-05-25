@@ -21,37 +21,21 @@ SEARCH_SOURCES = [
         "model_key": "golf6",
         "url": "https://www.kleinanzeigen.de/s-autos/dietzenbach/golf-6/k0c216l4556r250",
     },
-    {
-        "name": "Skoda Octavia",
-        "model_key": "octavia",
-        "url": "https://www.kleinanzeigen.de/s-autos/dietzenbach/skoda-octavia/k0c216l4556r250",
-    },
-    {
-        "name": "BMW 1er",
-        "model_key": "bmw1er",
-        "url": "https://www.kleinanzeigen.de/s-autos/dietzenbach/bmw-1er/k0c216l4556r250",
-    },
 ]
 
 MODEL_LABELS = {
     "golf7": "Golf 7",
     "golf6": "Golf 6",
-    "octavia": "Skoda Octavia",
-    "bmw1er": "BMW 1er",
 }
 
 MODEL_PRIORITIES = {
     "golf7": 4,
     "golf6": 3,
-    "octavia": 2,
-    "bmw1er": 1,
 }
 
 MODEL_ALIASES = {
     "golf7": ["golf 7", "golf vii", "golf vii variant", "golf 7 variant", "golf vii kombi"],
     "golf6": ["golf 6", "golf vi", "golf vi plus", "golf 6 plus", "golf vi variant"],
-    "octavia": ["skoda octavia", "octavia", "octavia combi"],
-    "bmw1er": ["bmw 1er", "1er", "f20", "e87", "118i", "116i", "120i"],
 }
 
 POSITIVE_KEYWORDS = [
@@ -111,6 +95,7 @@ MAX_PRICE_ALWAYS = 7000
 MAX_PRICE_VB = 8500
 MAX_KM = 160000
 MAX_DISTANCE_KM = 250
+MIN_YEAR = 2012
 
 
 def require_env(name: str) -> str:
@@ -314,13 +299,13 @@ def quality_score(details: dict[str, str | int | bool | None]) -> tuple[int, lis
 
     year = details.get("year")
     if isinstance(year, int):
-        if year >= 2015:
+        if year >= 2016:
             score += 3
             reasons.append("juengeres Baujahr")
-        elif year >= 2012:
+        elif year >= 2014:
             score += 2
             reasons.append("solides Baujahr")
-        elif year >= 2010:
+        elif year >= 2012:
             score += 1
 
     price = details.get("price")
@@ -435,6 +420,12 @@ def passes_filters(details: dict[str, str | int | bool | None]) -> tuple[bool, s
         return False, "Keine KM erkannt"
     if km > MAX_KM:
         return False, "Zu viele KM"
+
+    year = details.get("year")
+    if not isinstance(year, int):
+        return False, "Kein Baujahr erkannt"
+    if year < MIN_YEAR:
+        return False, "Baujahr zu alt"
 
     hu = str(details.get("hu", "")).strip()
     if not hu:
@@ -575,6 +566,7 @@ def main() -> None:
     print(f"Budget: bis {MAX_PRICE_ALWAYS} €, oder bis {MAX_PRICE_VB} € VB")
     print(f"Radius: {MAX_DISTANCE_KM} km")
     print(f"Max KM: {MAX_KM}")
+    print(f"Min Baujahr: {MIN_YEAR}")
 
     while True:
         cycle_started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
