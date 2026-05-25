@@ -61,7 +61,7 @@ POSITIVE_KEYWORDS = [
     "lückenlos",
 ]
 
-NEGATIVE_KEYWORDS = [
+HARD_NEGATIVE_KEYWORDS = [
     "motorschaden",
     "getriebeschaden",
     "unfallwagen",
@@ -74,10 +74,13 @@ NEGATIVE_KEYWORDS = [
     "für export",
     "teileträger",
     "schlachtfest",
+]
+
+SOFT_NEGATIVE_KEYWORDS = [
+    "raucherfahrzeug",
     "hagelschaden",
     "ölverlust",
     "wasserverlust",
-    "raucherfahrzeug",
 ]
 
 HEADERS = {
@@ -275,10 +278,11 @@ def keyword_matches(text: str, keywords: list[str]) -> list[str]:
     return [keyword for keyword in keywords if keyword in lowered]
 
 
-def quality_score(details: dict[str, str | int | bool | None]) -> tuple[int, list[str]]:
+def quality_score(details: dict[str, str | int | bool | None]) -> tuple[int, list[str], list[str]]:
     text = str(details.get("page_text", ""))
     score = 0
     reasons: list[str] = []
+    warnings: list[str] = []
 
     model = str(details.get("model", ""))
     model_priority = MODEL_PRIORITIES.get(model, 0)
@@ -328,19 +332,28 @@ def quality_score(details: dict[str, str | int | bool | None]) -> tuple[int, lis
         reasons.append("Benziner")
     elif "diesel" in fuel:
         score -= 1
+        warnings.append("Diesel")
 
     transmission = str(details.get("transmission", "")).lower()
     if "manuell" in transmission or "schalt" in transmission:
         score += 2
         reasons.append("Schalter")
 
+    condition = str(details.get("condition", "")).lower()
+    if "beschädigt" in condition:
+        score -= 4
+        warnings.append("Zustand als beschädigt markiert")
+
     positive_hits = keyword_matches(text, POSITIVE_KEYWORDS)
-    negative_hits = keyword_matches(text, NEGATIVE_KEYWORDS)
+    soft_negative_hits = keyword_matches(text, SOFT_NEGATIVE_KEYWORDS)
+
     score += len(positive_hits)
-    score -= len(negative_hits) * 4
+    score -= len(soft_negative_hits) * 2
 
     reasons.extend(positive_hits[:4])
-    return score, reasons[:6]
+    warnings.extend(soft_negative_hits[:3])
+
+    return score, reasons[:6], warnings[:4]
 
 
 def score_label(score: int) -> str:
@@ -396,13 +409,9 @@ def passes_filters(details: dict[str, str | int | bool | None]) -> tuple[bool, s
         return False, "Kein Zielmodell"
 
     text = str(details.get("page_text", ""))
-    negative_hits = keyword_matches(text, NEGATIVE_KEYWORDS)
-    if negative_hits:
-        return False, f"Ausschlusswort: {negative_hits[0]}"
-
-    condition = str(details.get("condition", "")).lower()
-    if "beschädigt" in condition:
-        return False, "Beschaedigter Zustand"
+    hard_negative_hits = keyword_matches(text, HARD_NEGATIVE_KEYWORDS)
+    if hard_negative_hits:
+        return False, f"Ausschlusswort: {hard_negative_hits[0]}"
 
     price = details.get("price")
     vb = bool(details.get("vb"))
@@ -425,7 +434,7 @@ def passes_filters(details: dict[str, str | int | bool | None]) -> tuple[bool, s
 
 
 def build_message(url: str, details: dict[str, str | int | bool | None]) -> str:
-    score, reasons = quality_score(details)
+    score, reasons, warnings = quality_score(details)
     label = score_label(score)
 
     title = str(details.get("title", "Auto-Anzeige"))
@@ -467,6 +476,8 @@ def build_message(url: str, details: dict[str, str | int | bool | None]) -> str:
     lines.append(f"Einschaetzung: {label} (Score {score})")
     if reasons:
         lines.append("Pluspunkte: " + ", ".join(reasons))
+    if warnings:
+        lines.append("Auffaellig: " + ", ".join(warnings))
 
     lines.append("")
     lines.append(url)
