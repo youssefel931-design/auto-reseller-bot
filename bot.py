@@ -502,12 +502,6 @@ def get_sleep_seconds() -> int:
     return 300
 
 
-def bootstrap_source(state: dict[str, list[str]], source_name: str, listings: list[dict[str, str]]) -> None:
-    if source_name not in state:
-        state[source_name] = [item["id"] for item in listings]
-        print(f"[{source_name}] Erster Start: {len(listings)} Anzeigen gespeichert, nichts gesendet.")
-
-
 def process_source(
     token: str,
     chat_id: str,
@@ -518,8 +512,10 @@ def process_source(
     listings = fetch_search_results(source["url"])
     print(f"[{source_name}] {len(listings)} Anzeigen gefunden.")
 
-    bootstrap_source(state, source_name, listings)
     previous = set(state.get(source_name, []))
+    if source_name not in state:
+        print(f"[{source_name}] Erster Start: sende aktuelle passende Anzeigen.")
+
     new_listings = [item for item in listings if item["id"] not in previous]
 
     for item in new_listings:
