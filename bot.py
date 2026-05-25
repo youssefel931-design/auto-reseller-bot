@@ -13,33 +13,45 @@ from bs4 import BeautifulSoup
 SEARCH_SOURCES = [
     {
         "name": "Golf 7",
+        "model_key": "golf7",
         "url": "https://www.kleinanzeigen.de/s-autos/dietzenbach/golf-7/k0c216l4556r250",
     },
     {
         "name": "Golf 6",
+        "model_key": "golf6",
         "url": "https://www.kleinanzeigen.de/s-autos/dietzenbach/golf-6/k0c216l4556r250",
     },
     {
         "name": "Skoda Octavia",
+        "model_key": "octavia",
         "url": "https://www.kleinanzeigen.de/s-autos/dietzenbach/skoda-octavia/k0c216l4556r250",
     },
     {
         "name": "BMW 1er",
+        "model_key": "bmw1er",
         "url": "https://www.kleinanzeigen.de/s-autos/dietzenbach/bmw-1er/k0c216l4556r250",
     },
 ]
 
+MODEL_LABELS = {
+    "golf7": "Golf 7",
+    "golf6": "Golf 6",
+    "octavia": "Skoda Octavia",
+    "bmw1er": "BMW 1er",
+}
+
 MODEL_PRIORITIES = {
-    "golf 7": 4,
-    "golf vii": 4,
-    "golf 6": 3,
-    "golf vi": 3,
-    "skoda octavia": 2,
+    "golf7": 4,
+    "golf6": 3,
     "octavia": 2,
-    "bmw 1er": 1,
-    "118i": 1,
-    "116i": 1,
-    "120i": 1,
+    "bmw1er": 1,
+}
+
+MODEL_ALIASES = {
+    "golf7": ["golf 7", "golf vii", "golf vii variant", "golf 7 variant", "golf vii kombi"],
+    "golf6": ["golf 6", "golf vi", "golf vi plus", "golf 6 plus", "golf vi variant"],
+    "octavia": ["skoda octavia", "octavia", "octavia combi"],
+    "bmw1er": ["bmw 1er", "1er", "f20", "e87", "118i", "116i", "120i"],
 }
 
 POSITIVE_KEYWORDS = [
@@ -96,7 +108,7 @@ REQUEST_TIMEOUT = 20
 TELEGRAM_CAPTION_LIMIT = 1024
 
 MAX_PRICE_ALWAYS = 7000
-MAX_PRICE_VB = 8000
+MAX_PRICE_VB = 8500
 MAX_KM = 160000
 MAX_DISTANCE_KM = 250
 
@@ -260,17 +272,15 @@ def is_vb(text: str) -> bool:
     return " vb" in lowered or "verhandlungsbasis" in lowered or "vb " in lowered
 
 
-def detect_model(text: str) -> str:
+def detect_model(text: str, source_model_key: str) -> str:
     lowered = text.lower()
-    best_model = ""
-    best_score = -1
 
-    for model, score in MODEL_PRIORITIES.items():
-        if model in lowered and score > best_score:
-            best_model = model
-            best_score = score
+    for model_key, aliases in MODEL_ALIASES.items():
+        for alias in aliases:
+            if alias in lowered:
+                return model_key
 
-    return best_model
+    return source_model_key
 
 
 def keyword_matches(text: str, keywords: list[str]) -> list[str]:
@@ -284,11 +294,11 @@ def quality_score(details: dict[str, str | int | bool | None]) -> tuple[int, lis
     reasons: list[str] = []
     warnings: list[str] = []
 
-    model = str(details.get("model", ""))
-    model_priority = MODEL_PRIORITIES.get(model, 0)
+    model_key = str(details.get("model_key", ""))
+    model_priority = MODEL_PRIORITIES.get(model_key, 0)
     score += model_priority * 2
     if model_priority:
-        reasons.append(f"Modell-Prioritaet {model}")
+        reasons.append(f"Modell-Prioritaet {MODEL_LABELS.get(model_key, model_key)}")
 
     km = details.get("km")
     if isinstance(km, int):
@@ -322,7 +332,7 @@ def quality_score(details: dict[str, str | int | bool | None]) -> tuple[int, lis
         elif price <= 7000:
             score += 2
             reasons.append("im Budget")
-        elif price <= 8000 and vb:
+        elif price <= 8500 and vb:
             score += 1
             reasons.append("VB ueber Budget")
 
@@ -366,7 +376,7 @@ def score_label(score: int) -> str:
     return "eher schwach"
 
 
-def fetch_listing_details(url: str) -> dict[str, str | int | bool | None]:
+def fetch_listing_details(url: str, source_model_key: str) -> dict[str, str | int | bool | None]:
     response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
 
@@ -380,13 +390,13 @@ def fetch_listing_details(url: str) -> dict[str, str | int | bool | None]:
     )
 
     image_url = pick_best_image_url(soup, url)
-    model = detect_model(f"{title} {page_text}")
+    model_key = detect_model(f"{title} {page_text}", source_model_key)
 
     return {
         "title": title or "Auto-Anzeige",
         "image_url": image_url,
         "page_text": page_text,
-        "model": model,
+        "model_key": model_key,
         "price": parse_price_eur(page_text),
         "km": parse_km(page_text),
         "year": parse_year(page_text),
@@ -404,8 +414,8 @@ def fetch_listing_details(url: str) -> dict[str, str | int | bool | None]:
 
 
 def passes_filters(details: dict[str, str | int | bool | None]) -> tuple[bool, str]:
-    model = str(details.get("model", ""))
-    if not model:
+    model_key = str(details.get("model_key", ""))
+    if not model_key:
         return False, "Kein Zielmodell"
 
     text = str(details.get("page_text", ""))
@@ -438,7 +448,8 @@ def build_message(url: str, details: dict[str, str | int | bool | None]) -> str:
     label = score_label(score)
 
     title = str(details.get("title", "Auto-Anzeige"))
-    model = str(details.get("model", ""))
+    model_key = str(details.get("model_key", ""))
+    model_label = MODEL_LABELS.get(model_key, model_key)
     price = details.get("price")
     km = details.get("km")
     year = details.get("year")
@@ -452,7 +463,7 @@ def build_message(url: str, details: dict[str, str | int | bool | None]) -> str:
         "Neue Auto-Chance",
         title,
         "",
-        f"Modell: {model}",
+        f"Modell: {model_label}",
     ]
 
     if isinstance(price, int):
@@ -520,6 +531,7 @@ def process_source(
     source: dict[str, str],
 ) -> None:
     source_name = source["name"]
+    source_model_key = source["model_key"]
     listings = fetch_search_results(source["url"])
     print(f"[{source_name}] {len(listings)} Anzeigen gefunden.")
 
@@ -532,7 +544,7 @@ def process_source(
     for item in new_listings:
         url = item["url"]
         try:
-            details = fetch_listing_details(url)
+            details = fetch_listing_details(url, source_model_key)
             ok, reason = passes_filters(details)
 
             if not ok:
